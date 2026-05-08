@@ -13,6 +13,13 @@ This version is trimmed for two concrete workflows only:
 1. offline verification on `data/dataset`
 2. USB camera recognition on the NUC
 
+AprilTag detection is also available now through OpenCV `aruco` when the host
+already provides `opencv-contrib`.
+
+For offline dataset playback, image transport is now forced to reliable QoS so
+that QR, 1D barcode, and AprilTag frames are not dropped between the dataset
+publisher and detector.
+
 ## Package Layout
 
 The maintained structure is:
@@ -79,7 +86,11 @@ Run the built-in sample dataset:
 cd ~/venom_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 launch zbar_ros dataset_barcode.launch.py
+ros2 launch zbar_ros dataset_barcode.launch.py \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false
 ```
 
 The default dataset path resolves to the installed copy of:
@@ -88,11 +99,21 @@ The default dataset path resolves to the installed copy of:
 perception/zbar_ros/data/dataset
 ```
 
+The maintained dataset currently contains one sample for each type:
+
+- QR code
+- 1D barcode
+- AprilTag
+
 To use another directory:
 
 ```bash
 ros2 launch zbar_ros dataset_barcode.launch.py \
   dataset_path:=/path/to/your/dataset \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
   publish_interval_seconds:=0.5
 ```
 
@@ -102,8 +123,25 @@ In another shell:
 cd ~/venom_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 topic echo /perception/barcodes --once
+ros2 topic echo /perception/barcodes
 ```
+
+For easier observation, slow the dataset publisher down:
+
+```bash
+ros2 launch zbar_ros dataset_barcode.launch.py \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
+  publish_interval_seconds:=2.0
+```
+
+Terminal 1 will now show which dataset image is being published, and the detector
+will print the decoded result in the same window.
+
+In dataset mode, `use_reliable_image_qos:=true` is enabled by default. Keep it
+enabled unless you explicitly need to test sensor-data QoS behavior.
 
 ## USB Camera Recognition
 
@@ -130,6 +168,9 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch zbar_ros zbar_ros.launch.py
 ```
+
+`zbar_ros.launch.py` keeps `use_reliable_image_qos:=false` by default for live
+camera topics, because most camera drivers publish with sensor-data QoS.
 
 Useful detector settings:
 
@@ -241,6 +282,21 @@ ros2 launch zbar_ros zbar_ros.launch.py \
   publish_debug_image:=false
 ```
 
+Recommended AprilTag detector command on D435i:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
 The default D435i color profile is `1280x720x30`.
 If latency matters more than range, keep that profile.
 If the scene is bright and QR codes are close, `640x480x30` can reduce CPU load:
@@ -262,3 +318,4 @@ ros2 launch zbar_ros d435i_camera.launch.py usb_port_id:=4-3
 - Debug images preserve the incoming header and are safe to inspect in RViz or `rqt_image_view`.
 - `qrcode_only=true` is the recommended default for the current Venom use case.
 - The module does not subscribe to `/camera_info`, because the current scope is 2D decoding only.
+- AprilTag support depends on OpenCV `aruco` from `opencv-contrib`, not on `apriltag_ros`.

@@ -14,6 +14,11 @@
 
 namespace zbar_ros
 {
+namespace
+{
+const auto kReliableImageQos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+}
+
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
@@ -33,7 +38,7 @@ public:
       publish_interval_seconds_ = 1.0;
     }
 
-    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image", 10);
+    image_pub_ = this->create_publisher<sensor_msgs::msg::Image>("image", kReliableImageQos);
 
     loadImageFiles();
 
@@ -108,7 +113,12 @@ private:
 
     auto message = cv_bridge::CvImage(header, "bgr8", image).toImageMsg();
     image_pub_->publish(*message);
-    RCLCPP_DEBUG(get_logger(), "Published dataset image: %s", image_path.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "Publishing dataset image [%zu/%zu]: %s",
+      current_image_index_ == 0 ? image_files_.size() : current_image_index_,
+      image_files_.size(),
+      image_path.filename().c_str());
   }
 
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;

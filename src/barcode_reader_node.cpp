@@ -29,11 +29,14 @@
 *
 */
 #include <functional>
+#include <limits>
+#include <unordered_map>
 
 #include "cv_bridge/cv_bridge.h"
 #include "sensor_msgs/image_encodings.hpp"
 #include "zbar_ros/barcode_reader_node.hpp"
 #include <geometry_msgs/msg/point32.hpp>
+#include <opencv2/aruco.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace zbar_ros
@@ -41,6 +44,7 @@ namespace zbar_ros
 namespace
 {
 const auto kSensorDataQos = rclcpp::SensorDataQoS();
+const auto kDetectionsQos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 constexpr char kZbarMonoEncoding[] = "Y800";
 const cv::Scalar kPolygonColor(0, 255, 0);
 const cv::Scalar kLabelColor(0, 255, 255);
@@ -83,6 +87,28 @@ double clampScanScale(double value, const rclcpp::Logger & logger)
     value);
   return 1.0;
 }
+
+int resolveAprilTagDictionaryId(
+  const std::string & family, const rclcpp::Logger & logger)
+{
+  static const std::unordered_map<std::string, int> kFamilies = {
+    {"tag16h5", cv::aruco::DICT_APRILTAG_16h5},
+    {"tag25h9", cv::aruco::DICT_APRILTAG_25h9},
+    {"tag36h10", cv::aruco::DICT_APRILTAG_36h10},
+    {"tag36h11", cv::aruco::DICT_APRILTAG_36h11},
+  };
+
+  const auto it = kFamilies.find(family);
+  if (it != kFamilies.end()) {
+    return it->second;
+  }
+
+  RCLCPP_WARN(
+    logger,
+    "Unsupported AprilTag family %s; falling back to tag36h11",
+    family.c_str());
+  return cv::aruco::DICT_APRILTAG_36h11;
+}
 }  // namespace
 
 BarcodeReaderNode::BarcodeReaderNode()
@@ -93,11 +119,14 @@ BarcodeReaderNode::BarcodeReaderNode()
   qrcode_only_ = this->declare_parameter<bool>("qrcode_only", true);
   try_inverted_ = this->declare_parameter<bool>("try_inverted", false);
   equalize_histogram_ = this->declare_parameter<bool>("equalize_histogram", false);
+  use_reliable_image_qos_ = this->declare_parameter<bool>("use_reliable_image_qos", false);
   scanner_x_density_ = clampNonNegative(
     this->declare_parameter<int>("scanner_x_density", 1), "scanner_x_density", get_logger());
   scanner_y_density_ = clampNonNegative(
     this->declare_parameter<int>("scanner_y_density", 1), "scanner_y_density", get_logger());
   scan_scale_ = clampScanScale(this->declare_parameter<double>("scan_scale", 1.0), get_logger());
+  enable_apriltag_ = this->declare_parameter<bool>("enable_apriltag", false);
+  apriltag_family_ = this->declare_parameter<std::string>("apriltag_family", "tag36h11");
 
   scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_ENABLE, 0);
   if (qrcode_only_) {
@@ -113,10 +142,26 @@ BarcodeReaderNode::BarcodeReaderNode()
   scanner_.set_config(
     zbar::ZBAR_NONE, zbar::ZBAR_CFG_TEST_INVERTED, try_inverted_ ? 1 : 0);
 
-  image_sub_ = this->create_subscription<ImageMsg>(
-    "image", kSensorDataQos, std::bind(&BarcodeReaderNode::imageCb, this, std::placeholders::_1));
+  if (enable_apriltag_) {
+    apriltag_dictionary_ = cv::aruco::getPredefinedDictionary(
+      resolveAprilTagDictionaryId(apriltag_family_, get_logger()));
+    apriltag_detector_parameters_ = cv::aruco::DetectorParameters::create();
+    apriltag_detector_parameters_->cornerRefinementMethod = cv::aruco::CORNER_REFINE_APRILTAG;
+    RCLCPP_INFO(
+      get_logger(), "AprilTag detection enabled with family %s", apriltag_family_.c_str());
+  } else {
+    RCLCPP_INFO(get_logger(), "AprilTag detection disabled");
+  }
 
-  detections_pub_ = this->create_publisher<BarcodeDetectionsMsg>("detections", kSensorDataQos);
+  rclcpp::QoS image_qos = rclcpp::SensorDataQoS();
+  if (use_reliable_image_qos_) {
+    image_qos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
+  }
+
+  image_sub_ = this->create_subscription<ImageMsg>(
+    "image", image_qos, std::bind(&BarcodeReaderNode::imageCb, this, std::placeholders::_1));
+
+  detections_pub_ = this->create_publisher<BarcodeDetectionsMsg>("detections", kDetectionsQos);
 
   if (publish_debug_image_) {
     debug_image_pub_ = this->create_publisher<ImageMsg>("debug_image", kSensorDataQos);
@@ -133,6 +178,11 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
       get_logger(), *get_clock(), 5000,
       "Failed to convert image to mono8 for ZBar decoding: %s", ex.what());
     return;
+  }
+
+  cv::Mat apriltag_image = mono_image->image;
+  if (!apriltag_image.isContinuous()) {
+    apriltag_image = apriltag_image.clone();
   }
 
   cv::Mat scan_image = mono_image->image;
@@ -167,6 +217,10 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
   const double y_scale = static_cast<double>(mono_image->image.rows) / scan_image.rows;
 
   std::vector<BarcodeDetectionMsg> detections;
+  if (enable_apriltag_) {
+    detectAprilTags(apriltag_image, 1.0, 1.0, detections);
+  }
+
   for (zbar::Image::SymbolIterator symbol = zbar_image.symbol_begin();
     symbol != zbar_image.symbol_end(); ++symbol)
   {
@@ -177,6 +231,7 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
       detections.back().symbology.c_str(),
       detections.back().data.c_str());
   }
+
   detections_msg.detections = detections;
   if (publish_empty_detections_ || !detections.empty()) {
     detections_pub_->publish(detections_msg);
@@ -197,16 +252,77 @@ BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildDetection(
   detection.symbology = symbol.get_type_name();
 
   const auto location_size = symbol.get_location_size();
-  detection.polygon.points.reserve(location_size);
+  if (location_size == 0) {
+    return detection;
+  }
+
+  double min_x = std::numeric_limits<double>::max();
+  double max_x = std::numeric_limits<double>::lowest();
+  double min_y = std::numeric_limits<double>::max();
+  double max_y = std::numeric_limits<double>::lowest();
+
   for (int index = 0; index < location_size; ++index) {
+    const double x = symbol.get_location_x(index) * x_scale;
+    const double y = symbol.get_location_y(index) * y_scale;
+    min_x = std::min(min_x, x);
+    max_x = std::max(max_x, x);
+    min_y = std::min(min_y, y);
+    max_y = std::max(max_y, y);
+  }
+
+  detection.polygon.points.reserve(4);
+  for (const auto & point_xy : {
+      std::pair<float, float>{static_cast<float>(min_x), static_cast<float>(min_y)},
+      std::pair<float, float>{static_cast<float>(max_x), static_cast<float>(min_y)},
+      std::pair<float, float>{static_cast<float>(max_x), static_cast<float>(max_y)},
+      std::pair<float, float>{static_cast<float>(min_x), static_cast<float>(max_y)}})
+  {
     geometry_msgs::msg::Point32 point;
-    point.x = static_cast<float>(symbol.get_location_x(index) * x_scale);
-    point.y = static_cast<float>(symbol.get_location_y(index) * y_scale);
+    point.x = point_xy.first;
+    point.y = point_xy.second;
     point.z = 0.0F;
     detection.polygon.points.push_back(point);
   }
 
   return detection;
+}
+
+BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildAprilTagDetection(
+  int tag_id, const std::vector<cv::Point2f> & corners, double x_scale, double y_scale) const
+{
+  BarcodeDetectionMsg detection;
+  detection.data = std::to_string(tag_id);
+  detection.symbology = "APRILTAG";
+
+  detection.polygon.points.reserve(corners.size());
+  for (const auto & corner : corners) {
+    geometry_msgs::msg::Point32 point;
+    point.x = static_cast<float>(corner.x * x_scale);
+    point.y = static_cast<float>(corner.y * y_scale);
+    point.z = 0.0F;
+    detection.polygon.points.push_back(point);
+  }
+
+  return detection;
+}
+
+void BarcodeReaderNode::detectAprilTags(
+  const cv::Mat & scan_image, double x_scale, double y_scale,
+  std::vector<BarcodeDetectionMsg> & detections)
+{
+  if (!apriltag_dictionary_ || !apriltag_detector_parameters_) {
+    return;
+  }
+
+  std::vector<std::vector<cv::Point2f>> corners;
+  std::vector<int> ids;
+  cv::aruco::detectMarkers(
+    scan_image, apriltag_dictionary_, corners, ids, apriltag_detector_parameters_);
+
+  for (size_t index = 0; index < ids.size(); ++index) {
+    detections.push_back(buildAprilTagDetection(ids[index], corners[index], x_scale, y_scale));
+    RCLCPP_INFO(get_logger(), "Detected APRILTAG: %s", detections.back().data.c_str());
+  }
 }
 
 void BarcodeReaderNode::publishDebugImage(

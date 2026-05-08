@@ -21,6 +21,9 @@ def generate_launch_description():
     try_inverted = LaunchConfiguration("try_inverted")
     equalize_histogram = LaunchConfiguration("equalize_histogram")
     scan_scale = LaunchConfiguration("scan_scale")
+    enable_apriltag = LaunchConfiguration("enable_apriltag")
+    apriltag_family = LaunchConfiguration("apriltag_family")
+    use_reliable_image_qos = LaunchConfiguration("use_reliable_image_qos")
 
     return LaunchDescription(
         [
@@ -96,6 +99,21 @@ def generate_launch_description():
                 default_value="1.0",
                 description="Scale applied before scanning.",
             ),
+            DeclareLaunchArgument(
+                "enable_apriltag",
+                default_value="false",
+                description="Enable AprilTag detection through OpenCV aruco.",
+            ),
+            DeclareLaunchArgument(
+                "apriltag_family",
+                default_value="tag36h11",
+                description="AprilTag family: tag16h5, tag25h9, tag36h10, tag36h11.",
+            ),
+            DeclareLaunchArgument(
+                "use_reliable_image_qos",
+                default_value="true",
+                description="Use reliable QoS for dataset image transport.",
+            ),
             Node(
                 package="zbar_ros",
                 executable="dataset_image_publisher",
@@ -137,6 +155,13 @@ def generate_launch_description():
                             equalize_histogram, value_type=bool
                         ),
                         "scan_scale": ParameterValue(scan_scale, value_type=float),
+                        "enable_apriltag": ParameterValue(
+                            enable_apriltag, value_type=bool
+                        ),
+                        "apriltag_family": apriltag_family,
+                        "use_reliable_image_qos": ParameterValue(
+                            use_reliable_image_qos, value_type=bool
+                        ),
                     }
                 ],
                 remappings=[

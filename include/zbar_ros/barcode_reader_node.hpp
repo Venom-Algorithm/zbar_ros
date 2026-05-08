@@ -31,8 +31,10 @@
 #ifndef ZBAR_ROS__BARCODE_READER_NODE_HPP_
 #define ZBAR_ROS__BARCODE_READER_NODE_HPP_
 
+#include <memory>
 #include <vector>
 
+#include "opencv2/aruco.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "zbar_ros/msg/barcode_detection.hpp"
@@ -55,6 +57,11 @@ private:
   void imageCb(ImageMsg::ConstSharedPtr image);
   BarcodeDetectionMsg buildDetection(
     const zbar::Symbol & symbol, double x_scale, double y_scale) const;
+  BarcodeDetectionMsg buildAprilTagDetection(
+    int tag_id, const std::vector<cv::Point2f> & corners, double x_scale, double y_scale) const;
+  void detectAprilTags(
+    const cv::Mat & scan_image, double x_scale, double y_scale,
+    std::vector<BarcodeDetectionMsg> & detections);
   void publishDebugImage(
     const ImageMsg::ConstSharedPtr & image,
     const std::vector<BarcodeDetectionMsg> & detections);
@@ -68,9 +75,14 @@ private:
   bool qrcode_only_{true};
   bool try_inverted_{false};
   bool equalize_histogram_{false};
+  bool use_reliable_image_qos_{false};
   int scanner_x_density_{1};
   int scanner_y_density_{1};
   double scan_scale_{1.0};
+  bool enable_apriltag_{false};
+  std::string apriltag_family_{"tag36h11"};
+  cv::Ptr<cv::aruco::Dictionary> apriltag_dictionary_;
+  cv::Ptr<cv::aruco::DetectorParameters> apriltag_detector_parameters_;
 };
 
 }  // namespace zbar_ros
