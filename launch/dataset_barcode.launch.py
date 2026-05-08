@@ -14,7 +14,13 @@ def generate_launch_description():
     frame_id = LaunchConfiguration("frame_id")
     publish_interval_seconds = LaunchConfiguration("publish_interval_seconds")
     publish_debug_image = LaunchConfiguration("publish_debug_image")
+    publish_empty_detections = LaunchConfiguration("publish_empty_detections")
     qrcode_only = LaunchConfiguration("qrcode_only")
+    scanner_x_density = LaunchConfiguration("scanner_x_density")
+    scanner_y_density = LaunchConfiguration("scanner_y_density")
+    try_inverted = LaunchConfiguration("try_inverted")
+    equalize_histogram = LaunchConfiguration("equalize_histogram")
+    scan_scale = LaunchConfiguration("scan_scale")
 
     return LaunchDescription(
         [
@@ -56,9 +62,39 @@ def generate_launch_description():
                 description="Whether to publish annotated debug images.",
             ),
             DeclareLaunchArgument(
+                "publish_empty_detections",
+                default_value="true",
+                description="Publish empty detection messages for frames with no codes.",
+            ),
+            DeclareLaunchArgument(
                 "qrcode_only",
                 default_value="true",
                 description="Restrict ZBar scanning to QR codes only.",
+            ),
+            DeclareLaunchArgument(
+                "scanner_x_density",
+                default_value="1",
+                description="ZBar vertical scan-line density.",
+            ),
+            DeclareLaunchArgument(
+                "scanner_y_density",
+                default_value="1",
+                description="ZBar horizontal scan-line density.",
+            ),
+            DeclareLaunchArgument(
+                "try_inverted",
+                default_value="false",
+                description="Also test inverted light-on-dark codes when decoding fails.",
+            ),
+            DeclareLaunchArgument(
+                "equalize_histogram",
+                default_value="false",
+                description="Apply mono8 histogram equalization before decoding.",
+            ),
+            DeclareLaunchArgument(
+                "scan_scale",
+                default_value="1.0",
+                description="Scale applied before scanning.",
             ),
             Node(
                 package="zbar_ros",
@@ -78,15 +114,29 @@ def generate_launch_description():
             ),
             Node(
                 package="zbar_ros",
-                executable="barcode_reader",
-                name="barcode_reader",
+                executable="qr_code_detector",
+                name="qr_code_detector",
                 output="screen",
                 parameters=[
                     {
                         "publish_debug_image": ParameterValue(
                             publish_debug_image, value_type=bool
                         ),
+                        "publish_empty_detections": ParameterValue(
+                            publish_empty_detections, value_type=bool
+                        ),
                         "qrcode_only": ParameterValue(qrcode_only, value_type=bool),
+                        "scanner_x_density": ParameterValue(
+                            scanner_x_density, value_type=int
+                        ),
+                        "scanner_y_density": ParameterValue(
+                            scanner_y_density, value_type=int
+                        ),
+                        "try_inverted": ParameterValue(try_inverted, value_type=bool),
+                        "equalize_histogram": ParameterValue(
+                            equalize_histogram, value_type=bool
+                        ),
+                        "scan_scale": ParameterValue(scan_scale, value_type=float),
                     }
                 ],
                 remappings=[

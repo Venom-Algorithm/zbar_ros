@@ -44,20 +44,74 @@ const auto kSensorDataQos = rclcpp::SensorDataQoS();
 constexpr char kZbarMonoEncoding[] = "Y800";
 const cv::Scalar kPolygonColor(0, 255, 0);
 const cv::Scalar kLabelColor(0, 255, 255);
+const zbar::zbar_symbol_type_t kCommonSymbologies[] = {
+  zbar::ZBAR_QRCODE,
+  zbar::ZBAR_EAN13,
+  zbar::ZBAR_EAN8,
+  zbar::ZBAR_UPCA,
+  zbar::ZBAR_UPCE,
+  zbar::ZBAR_CODE128,
+  zbar::ZBAR_CODE93,
+  zbar::ZBAR_CODE39,
+  zbar::ZBAR_I25,
+  zbar::ZBAR_CODABAR,
+};
+
+int clampNonNegative(int value, const char * parameter_name, const rclcpp::Logger & logger)
+{
+  if (value >= 0) {
+    return value;
+  }
+
+  RCLCPP_WARN(
+    logger,
+    "Parameter %s must be non-negative; using 0 instead of %d",
+    parameter_name,
+    value);
+  return 0;
+}
+
+double clampScanScale(double value, const rclcpp::Logger & logger)
+{
+  if (value > 0.0 && value <= 1.0) {
+    return value;
+  }
+
+  RCLCPP_WARN(
+    logger,
+    "Parameter scan_scale must be in (0.0, 1.0]; using 1.0 instead of %.3f",
+    value);
+  return 1.0;
+}
 }  // namespace
 
 BarcodeReaderNode::BarcodeReaderNode()
-: Node("barcode_reader")
+: Node("qr_code_detector")
 {
   publish_debug_image_ = this->declare_parameter<bool>("publish_debug_image", true);
+  publish_empty_detections_ = this->declare_parameter<bool>("publish_empty_detections", true);
   qrcode_only_ = this->declare_parameter<bool>("qrcode_only", true);
+  try_inverted_ = this->declare_parameter<bool>("try_inverted", false);
+  equalize_histogram_ = this->declare_parameter<bool>("equalize_histogram", false);
+  scanner_x_density_ = clampNonNegative(
+    this->declare_parameter<int>("scanner_x_density", 1), "scanner_x_density", get_logger());
+  scanner_y_density_ = clampNonNegative(
+    this->declare_parameter<int>("scanner_y_density", 1), "scanner_y_density", get_logger());
+  scan_scale_ = clampScanScale(this->declare_parameter<double>("scan_scale", 1.0), get_logger());
 
   scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_ENABLE, 0);
   if (qrcode_only_) {
     scanner_.set_config(zbar::ZBAR_QRCODE, zbar::ZBAR_CFG_ENABLE, 1);
   } else {
-    scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_ENABLE, 1);
+    for (const auto symbology : kCommonSymbologies) {
+      scanner_.set_config(symbology, zbar::ZBAR_CFG_ENABLE, 1);
+    }
   }
+  scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_X_DENSITY, scanner_x_density_);
+  scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_Y_DENSITY, scanner_y_density_);
+  scanner_.set_config(zbar::ZBAR_NONE, zbar::ZBAR_CFG_POSITION, 1);
+  scanner_.set_config(
+    zbar::ZBAR_NONE, zbar::ZBAR_CFG_TEST_INVERTED, try_inverted_ ? 1 : 0);
 
   image_sub_ = this->create_subscription<ImageMsg>(
     "image", kSensorDataQos, std::bind(&BarcodeReaderNode::imageCb, this, std::placeholders::_1));
@@ -81,22 +135,42 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
     return;
   }
 
+  cv::Mat scan_image = mono_image->image;
+  cv::Mat preprocessed_image;
+  if (equalize_histogram_) {
+    cv::equalizeHist(scan_image, preprocessed_image);
+    scan_image = preprocessed_image;
+  }
+
+  cv::Mat resized_image;
+  if (scan_scale_ < 1.0) {
+    cv::resize(scan_image, resized_image, cv::Size(), scan_scale_, scan_scale_, cv::INTER_AREA);
+    scan_image = resized_image;
+  }
+
+  if (!scan_image.isContinuous()) {
+    scan_image = scan_image.clone();
+  }
+
   zbar::Image zbar_image(
-    mono_image->image.cols,
-    mono_image->image.rows,
+    scan_image.cols,
+    scan_image.rows,
     kZbarMonoEncoding,
-    mono_image->image.data,
-    mono_image->image.cols * mono_image->image.rows);
+    scan_image.data,
+    scan_image.total() * scan_image.elemSize());
   scanner_.scan(zbar_image);
 
   BarcodeDetectionsMsg detections_msg;
   detections_msg.header = image->header;
 
+  const double x_scale = static_cast<double>(mono_image->image.cols) / scan_image.cols;
+  const double y_scale = static_cast<double>(mono_image->image.rows) / scan_image.rows;
+
   std::vector<BarcodeDetectionMsg> detections;
   for (zbar::Image::SymbolIterator symbol = zbar_image.symbol_begin();
     symbol != zbar_image.symbol_end(); ++symbol)
   {
-    detections.push_back(buildDetection(*symbol));
+    detections.push_back(buildDetection(*symbol, x_scale, y_scale));
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Detected %s: %s",
@@ -104,7 +178,9 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
       detections.back().data.c_str());
   }
   detections_msg.detections = detections;
-  detections_pub_->publish(detections_msg);
+  if (publish_empty_detections_ || !detections.empty()) {
+    detections_pub_->publish(detections_msg);
+  }
 
   if (publish_debug_image_ && debug_image_pub_) {
     publishDebugImage(image, detections);
@@ -114,7 +190,7 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
 }
 
 BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildDetection(
-  const zbar::Symbol & symbol) const
+  const zbar::Symbol & symbol, double x_scale, double y_scale) const
 {
   BarcodeDetectionMsg detection;
   detection.data = symbol.get_data();
@@ -124,8 +200,8 @@ BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildDetection(
   detection.polygon.points.reserve(location_size);
   for (int index = 0; index < location_size; ++index) {
     geometry_msgs::msg::Point32 point;
-    point.x = static_cast<float>(symbol.get_location_x(index));
-    point.y = static_cast<float>(symbol.get_location_y(index));
+    point.x = static_cast<float>(symbol.get_location_x(index) * x_scale);
+    point.y = static_cast<float>(symbol.get_location_y(index) * y_scale);
     point.z = 0.0F;
     detection.polygon.points.push_back(point);
   }
