@@ -56,9 +56,22 @@ ament_target_dependencies(dataset_image_publisher
 )
 target_link_libraries(dataset_image_publisher ${OpenCV_LIBRARIES})
 
+add_executable(target_pose_estimator src/target_pose_estimator.cpp)
+target_include_directories(target_pose_estimator PRIVATE ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(target_pose_estimator
+  cv_bridge
+  geometry_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs)
+target_link_libraries(target_pose_estimator
+  ${OpenCV_LIBRARIES}
+  "${cpp_typesupport_target}")
+
 install(TARGETS
   qr_code_detector
   dataset_image_publisher
+  target_pose_estimator
   barcode_reader_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib

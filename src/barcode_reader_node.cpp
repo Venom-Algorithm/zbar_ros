@@ -30,6 +30,8 @@
 */
 #include <functional>
 #include <limits>
+#include <optional>
+#include <string>
 #include <unordered_map>
 
 #include "cv_bridge/cv_bridge.h"
@@ -38,6 +40,7 @@
 #include <geometry_msgs/msg/point32.hpp>
 #include <opencv2/aruco.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/objdetect.hpp>
 
 namespace zbar_ros
 {
@@ -48,6 +51,7 @@ const auto kDetectionsQos = rclcpp::QoS(rclcpp::KeepLast(10)).reliable();
 constexpr char kZbarMonoEncoding[] = "Y800";
 const cv::Scalar kPolygonColor(0, 255, 0);
 const cv::Scalar kLabelColor(0, 255, 255);
+constexpr double kQrCornerMatchMargin = 8.0;
 const zbar::zbar_symbol_type_t kCommonSymbologies[] = {
   zbar::ZBAR_QRCODE,
   zbar::ZBAR_EAN13,
@@ -108,6 +112,67 @@ int resolveAprilTagDictionaryId(
     "Unsupported AprilTag family %s; falling back to tag36h11",
     family.c_str());
   return cv::aruco::DICT_APRILTAG_36h11;
+}
+
+cv::Rect2f boundingRectFromPolygon(const zbar_ros::msg::BarcodeDetection & detection)
+{
+  if (detection.polygon.points.empty()) {
+    return {};
+  }
+
+  float min_x = std::numeric_limits<float>::max();
+  float min_y = std::numeric_limits<float>::max();
+  float max_x = std::numeric_limits<float>::lowest();
+  float max_y = std::numeric_limits<float>::lowest();
+  for (const auto & point : detection.polygon.points) {
+    min_x = std::min(min_x, point.x);
+    min_y = std::min(min_y, point.y);
+    max_x = std::max(max_x, point.x);
+    max_y = std::max(max_y, point.y);
+  }
+
+  return cv::Rect2f(min_x, min_y, max_x - min_x, max_y - min_y);
+}
+
+bool cornersMatchRoughDetection(
+  const std::vector<cv::Point2f> & corners,
+  const zbar_ros::msg::BarcodeDetection & rough_detection)
+{
+  const auto rough_rect = boundingRectFromPolygon(rough_detection);
+  if (rough_rect.empty()) {
+    return true;
+  }
+
+  const auto corner_rect = cv::boundingRect(corners);
+  const auto expanded_rect = rough_rect + cv::Size2f(
+    static_cast<float>(kQrCornerMatchMargin * 2.0),
+    static_cast<float>(kQrCornerMatchMargin * 2.0));
+  const auto shifted_rect = cv::Rect2f(
+    expanded_rect.x - static_cast<float>(kQrCornerMatchMargin),
+    expanded_rect.y - static_cast<float>(kQrCornerMatchMargin),
+    expanded_rect.width,
+    expanded_rect.height);
+  return (shifted_rect & cv::Rect2f(corner_rect)).area() > 0.0F;
+}
+
+std::optional<std::vector<cv::Point2f>> qrCornersFromPointsMat(
+  const cv::Mat & points, int qr_index)
+{
+  if (points.empty() || points.type() != CV_32FC2) {
+    return std::nullopt;
+  }
+
+  const int qr_count = points.rows;
+  if (qr_index < 0 || qr_index >= qr_count || points.cols < 4) {
+    return std::nullopt;
+  }
+
+  std::vector<cv::Point2f> corners;
+  corners.reserve(4);
+  for (int corner_index = 0; corner_index < 4; ++corner_index) {
+    corners.push_back(points.at<cv::Point2f>(qr_index, corner_index));
+  }
+  return corners;
 }
 }  // namespace
 
@@ -225,6 +290,14 @@ void BarcodeReaderNode::imageCb(ImageMsg::ConstSharedPtr image)
     symbol != zbar_image.symbol_end(); ++symbol)
   {
     detections.push_back(buildDetection(*symbol, x_scale, y_scale));
+    if (detections.back().symbology == "QR-Code") {
+      const auto qr_corners = findQrCodeCorners(mono_image->image, detections.back());
+      if (qr_corners.has_value()) {
+        replacePolygonWithCorners(detections.back(), *qr_corners);
+      } else {
+        detections.back().polygon.points.clear();
+      }
+    }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
       "Detected %s: %s",
@@ -285,6 +358,52 @@ BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildDetection(
   }
 
   return detection;
+}
+
+std::optional<std::vector<cv::Point2f>> BarcodeReaderNode::findQrCodeCorners(
+  const cv::Mat & image, const BarcodeDetectionMsg & rough_detection) const
+{
+  cv::Mat points;
+  if (!qr_code_detector_.detectMulti(image, points) || points.empty()) {
+    if (!qr_code_detector_.detect(image, points) || points.empty()) {
+      return std::nullopt;
+    }
+  }
+
+  if (points.rows == 1) {
+    const auto corners = qrCornersFromPointsMat(points, 0);
+    if (corners.has_value() && cornersMatchRoughDetection(*corners, rough_detection)) {
+      return corners;
+    }
+    return std::nullopt;
+  }
+
+  const int qr_count = points.rows;
+  for (int qr_index = 0; qr_index < qr_count; ++qr_index) {
+    const auto corners = qrCornersFromPointsMat(points, qr_index);
+    if (!corners.has_value()) {
+      continue;
+    }
+    if (cornersMatchRoughDetection(*corners, rough_detection)) {
+      return corners;
+    }
+  }
+
+  return std::nullopt;
+}
+
+void BarcodeReaderNode::replacePolygonWithCorners(
+  BarcodeDetectionMsg & detection, const std::vector<cv::Point2f> & corners) const
+{
+  detection.polygon.points.clear();
+  detection.polygon.points.reserve(corners.size());
+  for (const auto & corner : corners) {
+    geometry_msgs::msg::Point32 point;
+    point.x = corner.x;
+    point.y = corner.y;
+    point.z = 0.0F;
+    detection.polygon.points.push_back(point);
+  }
 }
 
 BarcodeReaderNode::BarcodeDetectionMsg BarcodeReaderNode::buildAprilTagDetection(

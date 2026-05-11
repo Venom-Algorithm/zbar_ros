@@ -297,6 +297,83 @@ ros2 launch zbar_ros zbar_ros.launch.py \
   publish_debug_image:=false
 ```
 
+## Target Pose Estimation
+
+`target_pose_estimator` converts a 4-corner QR or AprilTag detection into a
+camera-frame pose with OpenCV `solvePnP`. For the Venom task, the normal path is:
+
+1. `qr_code_detector` reads the QR content with ZBar.
+2. The same node refines the QR polygon with OpenCV QR corners.
+3. `target_pose_estimator` uses those four corners, `/camera_info`, and the
+   real printed QR side length to publish the target pose.
+
+It subscribes to:
+
+- `/perception/barcodes`
+- `/camera/camera/color/camera_info`
+- optional aligned depth image
+
+It publishes:
+
+- `/perception/target_pose` as `geometry_msgs/msg/PoseStamped`
+
+The output fields are:
+
+- `header.frame_id`: source frame of the estimate, usually the camera optical frame
+- `pose.position.x/y/z`: target position relative to the camera, in meters
+- `pose.orientation.x/y/z/w`: target orientation relative to the camera, as a quaternion
+
+For QR pose estimation on D435i, start the camera with color, camera info, and
+aligned depth:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros d435i_camera.launch.py \
+  usb_port_id:=4-3 \
+  rgb_camera.color_profile:=1280x720x30 \
+  enable_depth:=true \
+  enable_sync:=true \
+  align_depth.enable:=true \
+  log_level:=warn
+```
+
+Start QR detection:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=true \
+  try_inverted:=true \
+  equalize_histogram:=true \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+Start pose estimation:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros target_pose_estimator.launch.py \
+  target_size_m:=0.16 \
+  use_depth:=true \
+  preferred_symbology:=QR-Code
+```
+
+`target_size_m` must match the real side length of the printed QR square in
+meters. Use the side length between the detected QR corners, not the full paper
+size if there is extra white margin. Depth is used only to correct translation
+distance; PnP remains the primary pose estimate.
+
+For AprilTag pose estimation, keep the same camera command, enable AprilTag in
+the detector, and set `preferred_symbology:=APRILTAG`.
+
 The default D435i color profile is `1280x720x30`.
 If latency matters more than range, keep that profile.
 If the scene is bright and QR codes are close, `640x480x30` can reduce CPU load:
@@ -317,5 +394,5 @@ ros2 launch zbar_ros d435i_camera.launch.py usb_port_id:=4-3
 - The detector publishes one `BarcodeDetections` message per input frame, even when no code is present.
 - Debug images preserve the incoming header and are safe to inspect in RViz or `rqt_image_view`.
 - `qrcode_only=true` is the recommended default for the current Venom use case.
-- The module does not subscribe to `/camera_info`, because the current scope is 2D decoding only.
+- `qr_code_detector` does not subscribe to `/camera_info`; pose estimation is handled by `target_pose_estimator`.
 - AprilTag support depends on OpenCV `aruco` from `opencv-contrib`, not on `apriltag_ros`.

@@ -12,6 +12,9 @@ def generate_launch_description():
     usb_port_id = LaunchConfiguration("usb_port_id")
     color_profile = LaunchConfiguration("rgb_camera.color_profile")
     enable_auto_exposure = LaunchConfiguration("rgb_camera.enable_auto_exposure")
+    enable_depth = LaunchConfiguration("enable_depth")
+    enable_sync = LaunchConfiguration("enable_sync")
+    align_depth = LaunchConfiguration("align_depth.enable")
     publish_tf = LaunchConfiguration("publish_tf")
     log_level = LaunchConfiguration("log_level")
     output = LaunchConfiguration("output")
@@ -33,7 +36,7 @@ def generate_launch_description():
             "rgb_camera.color_profile": color_profile,
             "rgb_camera.color_format": "RGB8",
             "rgb_camera.enable_auto_exposure": enable_auto_exposure,
-            "enable_depth": "false",
+            "enable_depth": enable_depth,
             "enable_infra": "false",
             "enable_infra1": "false",
             "enable_infra2": "false",
@@ -41,9 +44,9 @@ def generate_launch_description():
             "enable_accel": "false",
             "enable_motion": "false",
             "enable_rgbd": "false",
-            "enable_sync": "false",
+            "enable_sync": enable_sync,
             "pointcloud.enable": "false",
-            "align_depth.enable": "false",
+            "align_depth.enable": align_depth,
             "colorizer.enable": "false",
             "publish_tf": publish_tf,
         }.items(),
@@ -80,6 +83,21 @@ def generate_launch_description():
                 "rgb_camera.enable_auto_exposure",
                 default_value="true",
                 description="Enable RealSense color auto exposure.",
+            ),
+            DeclareLaunchArgument(
+                "enable_depth",
+                default_value="false",
+                description="Enable RealSense depth stream.",
+            ),
+            DeclareLaunchArgument(
+                "enable_sync",
+                default_value="false",
+                description="Synchronize RealSense streams.",
+            ),
+            DeclareLaunchArgument(
+                "align_depth.enable",
+                default_value="false",
+                description="Align depth image to color image.",
             ),
             DeclareLaunchArgument(
                 "publish_tf",

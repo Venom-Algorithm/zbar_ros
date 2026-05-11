@@ -32,9 +32,12 @@
 #define ZBAR_ROS__BARCODE_READER_NODE_HPP_
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "opencv2/aruco.hpp"
+#include "opencv2/objdetect.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "zbar_ros/msg/barcode_detection.hpp"
@@ -59,6 +62,10 @@ private:
     const zbar::Symbol & symbol, double x_scale, double y_scale) const;
   BarcodeDetectionMsg buildAprilTagDetection(
     int tag_id, const std::vector<cv::Point2f> & corners, double x_scale, double y_scale) const;
+  std::optional<std::vector<cv::Point2f>> findQrCodeCorners(
+    const cv::Mat & image, const BarcodeDetectionMsg & rough_detection) const;
+  void replacePolygonWithCorners(
+    BarcodeDetectionMsg & detection, const std::vector<cv::Point2f> & corners) const;
   void detectAprilTags(
     const cv::Mat & scan_image, double x_scale, double y_scale,
     std::vector<BarcodeDetectionMsg> & detections);
@@ -70,6 +77,7 @@ private:
   rclcpp::Publisher<BarcodeDetectionsMsg>::SharedPtr detections_pub_;
   rclcpp::Publisher<ImageMsg>::SharedPtr debug_image_pub_;
   zbar::ImageScanner scanner_;
+  cv::QRCodeDetector qr_code_detector_;
   bool publish_debug_image_{true};
   bool publish_empty_detections_{true};
   bool qrcode_only_{true};
