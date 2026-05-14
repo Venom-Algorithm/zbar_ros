@@ -185,7 +185,7 @@ ros2 launch zbar_ros zbar_ros.launch.py \
 ```
 
 - QR + 1D barcode, balanced for stability:
-  
+
 ```bash
 ros2 launch zbar_ros zbar_ros.launch.py \
   image_topic:=/image_raw \
