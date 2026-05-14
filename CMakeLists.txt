@@ -15,8 +15,18 @@ find_package(cv_bridge REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
-find_package(zbar_interfaces REQUIRED)
+find_package(std_msgs REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/BarcodeDetection.msg"
+  "msg/BarcodeDetections.msg"
+  DEPENDENCIES
+    geometry_msgs
+    std_msgs
+)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_library(barcode_reader_node src/barcode_reader_node.cpp)
 target_include_directories(barcode_reader_node PUBLIC
@@ -27,14 +37,15 @@ ament_target_dependencies(barcode_reader_node
   geometry_msgs
   rclcpp
   sensor_msgs
-  zbar_interfaces)
+  std_msgs)
 target_link_libraries(barcode_reader_node
   ${OpenCV_LIBRARIES}
-  zbar)
+  zbar
+  "${cpp_typesupport_target}")
 
-add_executable(barcode_reader src/barcode_reader_main.cpp)
-ament_target_dependencies(barcode_reader rclcpp)
-target_link_libraries(barcode_reader barcode_reader_node)
+add_executable(qr_code_detector src/barcode_reader_main.cpp)
+ament_target_dependencies(qr_code_detector rclcpp)
+target_link_libraries(qr_code_detector barcode_reader_node)
 
 add_executable(dataset_image_publisher src/dataset_image_publisher.cpp)
 target_include_directories(dataset_image_publisher PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -45,9 +56,22 @@ ament_target_dependencies(dataset_image_publisher
 )
 target_link_libraries(dataset_image_publisher ${OpenCV_LIBRARIES})
 
+add_executable(target_pose_estimator src/target_pose_estimator.cpp)
+target_include_directories(target_pose_estimator PRIVATE ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(target_pose_estimator
+  cv_bridge
+  geometry_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs)
+target_link_libraries(target_pose_estimator
+  ${OpenCV_LIBRARIES}
+  "${cpp_typesupport_target}")
+
 install(TARGETS
-  barcode_reader
+  qr_code_detector
   dataset_image_publisher
+  target_pose_estimator
   barcode_reader_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
@@ -60,6 +84,10 @@ install(DIRECTORY data/
   DESTINATION share/${PROJECT_NAME}/data)
 install(DIRECTORY include/
   DESTINATION include/)
+install(FILES
+  msg/BarcodeDetection.msg
+  msg/BarcodeDetections.msg
+  DESTINATION share/${PROJECT_NAME}/msg)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -75,8 +103,9 @@ ament_export_dependencies(
   geometry_msgs
   OpenCV
   rclcpp
+  rosidl_default_runtime
   sensor_msgs
-  zbar_interfaces)
+  std_msgs)
 ament_export_include_directories(include)
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_package()

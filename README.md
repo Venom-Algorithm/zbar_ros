@@ -1,164 +1,398 @@
 # zbar_ros
 
 `zbar_ros` is the Venom perception-layer barcode detector built on top of ZBar.
-It is intended for QR code recognition first, but it can be switched to broader
-barcode decoding when needed.
+The repository is intentionally kept as a single ROS 2 package:
 
-The integration contract is intentionally narrow:
-
-- input stays on standard `sensor_msgs/msg/Image`
-- output is published as a structured detection message, not raw strings
+- input stays on `sensor_msgs/msg/Image`
+- output is published as `zbar_ros/msg/BarcodeDetections`
 - no TF is published
 - output headers inherit the source image `stamp` and `frame_id`
 
-That keeps `zbar_ros` aligned with the rest of the `perception/` layer: pure 2D
-recognition in, structured 2D observations out.
+This version is trimmed for two concrete workflows only:
+
+1. offline verification on `data/dataset`
+2. USB camera recognition on the NUC
+
+AprilTag detection is also available now through OpenCV `aruco` when the host
+already provides `opencv-contrib`.
+
+For offline dataset playback, image transport is now forced to reliable QoS so
+that QR, 1D barcode, and AprilTag frames are not dropped between the dataset
+publisher and detector.
 
 ## Package Layout
 
-This module lives under `perception/zbar_ros`, but it is split into two ROS 2 packages:
+The maintained structure is:
 
-| Package | Role |
-| --- | --- |
-| `zbar_ros` | detector node, debug image publisher, and offline dataset helper |
-| `zbar_interfaces` | structured detection messages used by the detector output |
+```text
+zbar_ros/
+├── CMakeLists.txt
+├── package.xml
+├── README.md
+├── msg/
+├── include/zbar_ros/
+├── src/
+├── launch/
+└── data/dataset/
+```
+
+There is no separate `zbar_interfaces` package anymore. Messages are defined in
+`zbar_ros/msg`.
 
 ## Runtime Contract
-
-### Topics
 
 Default runtime interfaces:
 
 | Direction | Topic | Type | Notes |
 | --- | --- | --- | --- |
 | subscribe | `/image_raw` | `sensor_msgs/msg/Image` | source image stream |
-| publish | `/perception/barcodes` | `zbar_interfaces/msg/BarcodeDetections` | per-frame barcode detections |
+| publish | `/perception/barcodes` | `zbar_ros/msg/BarcodeDetections` | per-frame detections |
 | publish | `/perception/debug/barcodes` | `sensor_msgs/msg/Image` | annotated debug image |
 
-`BarcodeDetections.header` is copied from the input image header.
 Each `BarcodeDetection` contains:
 
-- `data`: decoded string content
-- `symbology`: ZBar symbol type such as `QRCODE`
+- `data`: decoded text
+- `symbology`: ZBar type such as `QRCODE`, `EAN-13`, `CODE-128`
 - `polygon`: 2D polygon in image pixel coordinates
 
-### Header And Frame Rules
-
-- `header.stamp` is copied from the input image
-- `header.frame_id` is copied from the input image
-- the detector does not rename frames and does not synthesize a new camera frame
-- downstream consumers must treat the result as image-plane data, not as a 3D pose
-
-### TF Contract
-
-This module does not publish any TF frame.
-
-That is intentional:
-
-- decoding a barcode from a monocular image does not imply a trustworthy 3D pose
-- frame ownership stays with the source camera driver or robot description package
-- if pose estimation is needed later, it should be added as a separate stage with explicit camera intrinsics and its own TF contract
+`zbar_ros` does not publish TF and does not estimate 3D pose.
 
 ## Launch Files
 
-Two launch entries are provided:
+Three launch files are kept:
 
 | Launch File | Purpose |
 | --- | --- |
-| `zbar_ros.launch.py` | run the detector against an existing camera topic |
-| `dataset_barcode.launch.py` | offline smoke test using images from a local dataset directory |
-
-### Live Camera Launch
-
-```bash
-cd ~/venom_ws
-source install/setup.bash
-ros2 launch zbar_ros zbar_ros.launch.py
-```
-
-Useful launch arguments:
-
-- `image_topic`: input image topic, default `/image_raw`
-- `detections_topic`: detection output topic, default `/perception/barcodes`
-- `debug_image_topic`: annotated image topic, default `/perception/debug/barcodes`
-- `publish_debug_image`: whether to publish annotated images, default `true`
-- `qrcode_only`: when `true`, only QR codes are scanned, default `true`
-
-Example with an explicit camera topic:
-
-```bash
-ros2 launch zbar_ros zbar_ros.launch.py image_topic:=/camera/image_raw
-```
-
-### Offline Dataset Launch
-
-This launch file is intended for quick verification without a live camera:
-
-```bash
-cd ~/venom_ws
-source install/setup.bash
-ros2 launch zbar_ros dataset_barcode.launch.py
-```
-
-The launch file uses the sample image under `perception/zbar_ros/data/dataset` by default.
-To override it:
-
-```bash
-ros2 launch zbar_ros dataset_barcode.launch.py \
-  dataset_path:=/path/to/your/dataset \
-  publish_interval_seconds:=0.5
-```
-
-The dataset helper publishes a test-only `frame_id` named
-`dataset_camera_optical_frame` by default. It is only for offline verification
-and is not part of the runtime TF tree.
-
-You can also run the dataset publisher alone:
-
-```bash
-ros2 run zbar_ros dataset_image_publisher --ros-args \
-  -p dataset_path:=/path/to/your/dataset
-```
+| `dataset_barcode.launch.py` | offline dataset verification |
+| `usb_camera.launch.py` | USB camera image source |
+| `d435i_camera.launch.py` | Intel RealSense D435i color image source |
+| `zbar_ros.launch.py` | detector node |
 
 ## Build
 
 From `~/venom_ws`:
 
 ```bash
-rosdep install -r --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
-colcon build --packages-select zbar_interfaces zbar_ros
+source /opt/ros/humble/setup.bash
+colcon build --packages-select zbar_ros
 source install/setup.bash
 ```
 
-## Verification
+## Dataset Verification
 
-A minimal review-friendly verification flow is:
+Run the built-in sample dataset:
 
 ```bash
 cd ~/venom_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 launch zbar_ros dataset_barcode.launch.py
+ros2 launch zbar_ros dataset_barcode.launch.py \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false
+```
+
+The default dataset path resolves to the installed copy of:
+
+```text
+perception/zbar_ros/data/dataset
+```
+
+The maintained dataset currently contains one sample for each type:
+
+- QR code
+- 1D barcode
+- AprilTag
+
+To use another directory:
+
+```bash
+ros2 launch zbar_ros dataset_barcode.launch.py \
+  dataset_path:=/path/to/your/dataset \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
+  publish_interval_seconds:=0.5
 ```
 
 In another shell:
 
 ```bash
 cd ~/venom_ws
+source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 topic echo /perception/barcodes --once
+ros2 topic echo /perception/barcodes
 ```
 
-What to verify:
+For easier observation, slow the dataset publisher down:
 
-- the launch starts both `dataset_image_publisher` and `qr_code_detector`
-- `/perception/barcodes` publishes `zbar_interfaces/msg/BarcodeDetections`
-- `/perception/debug/barcodes` publishes annotated `sensor_msgs/msg/Image`
-- detection messages preserve the source image `header`
-- no TF frames are created by `zbar_ros`
+```bash
+ros2 launch zbar_ros dataset_barcode.launch.py \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
+  publish_interval_seconds:=2.0
+```
+
+Terminal 1 will now show which dataset image is being published, and the detector
+will print the decoded result in the same window.
+
+In dataset mode, `use_reliable_image_qos:=true` is enabled by default. Keep it
+enabled unless you explicitly need to test sensor-data QoS behavior.
+
+## USB Camera Recognition
+
+`usb_camera.launch.py` is tuned for compatibility and stability first:
+
+- prefer `/dev/v4l/by-id/*-video-index0`
+- use `YUYV` by default
+- publish `mono8` by default for the fastest path into ZBar
+
+Start the camera:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros usb_camera.launch.py
+```
+
+Start the detector:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py
+```
+
+`zbar_ros.launch.py` keeps `use_reliable_image_qos:=false` by default for live
+camera topics, because most camera drivers publish with sensor-data QoS.
+
+Useful detector settings:
+
+- QR only, lower latency:
+
+```bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/image_raw \
+  qrcode_only:=true \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+- QR + 1D barcode, balanced for stability:
+
+```bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/image_raw \
+  qrcode_only:=false \
+  scanner_x_density:=1 \
+  scanner_y_density:=1 \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+- QR + 1D barcode, higher sensitivity on real hardware:
+
+```bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/image_raw \
+  qrcode_only:=false \
+  scanner_x_density:=1 \
+  scanner_y_density:=1 \
+  try_inverted:=true \
+  equalize_histogram:=true \
+  scan_scale:=1.0 \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+If the camera is fixed on the NUC, passing a stable by-id device is recommended:
+
+```bash
+ros2 launch zbar_ros usb_camera.launch.py \
+  video_device:=/dev/v4l/by-id/usb-your-camera-video-index0
+```
+
+## Practical NUC Settings
+
+- QR only:
+  - `image_size:="[640,480]"`
+  - `qrcode_only:=true`
+  - `output_encoding:=mono8`
+- QR + barcode:
+  - prefer the highest stable frame-rate mode first
+  - try `pixel_format:=MJPG` with `image_size:="[1280,720]"` if the camera keeps 30 fps
+  - fall back to `YUYV` if the MJPG-to-ROS image path is unstable
+  - `qrcode_only:=false`
+  - consider `try_inverted:=true` and `equalize_histogram:=true`
+
+If barcode recognition is weak, increase image resolution first before changing
+scanner density.
+
+## Intel RealSense D435i Recognition
+
+For D435i on the NUC, do not use `v4l2_camera`.
+Use `realsense2_camera` and feed `zbar_ros` from the RealSense color topic:
+
+- camera topic: `/camera/camera/color/image_raw`
+- camera info: `/camera/camera/color/camera_info`
+
+Start the D435i color stream:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros d435i_camera.launch.py
+```
+
+Recommended QR-only detector command:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=true \
+  try_inverted:=true \
+  equalize_histogram:=true \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+Recommended QR + 1D barcode detector command:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=false \
+  try_inverted:=true \
+  equalize_histogram:=true \
+  scan_scale:=1.0 \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+Recommended AprilTag detector command on D435i:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=false \
+  enable_apriltag:=true \
+  apriltag_family:=tag36h11 \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+## Target Pose Estimation
+
+`target_pose_estimator` converts a 4-corner QR or AprilTag detection into a
+camera-frame pose with OpenCV `solvePnP`. For the Venom task, the normal path is:
+
+1. `qr_code_detector` reads the QR content with ZBar.
+2. The same node refines the QR polygon with OpenCV QR corners.
+3. `target_pose_estimator` uses those four corners, `/camera_info`, and the
+   real printed QR side length to publish the target pose.
+
+It subscribes to:
+
+- `/perception/barcodes`
+- `/camera/camera/color/camera_info`
+- optional aligned depth image
+
+It publishes:
+
+- `/perception/target_pose` as `geometry_msgs/msg/PoseStamped`
+
+The output fields are:
+
+- `header.frame_id`: source frame of the estimate, usually the camera optical frame
+- `pose.position.x/y/z`: target position relative to the camera, in meters
+- `pose.orientation.x/y/z/w`: target orientation relative to the camera, as a quaternion
+
+For QR pose estimation on D435i, start the camera with color, camera info, and
+aligned depth:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros d435i_camera.launch.py \
+  usb_port_id:=4-3 \
+  rgb_camera.color_profile:=1280x720x30 \
+  enable_depth:=true \
+  enable_sync:=true \
+  align_depth.enable:=true \
+  log_level:=warn
+```
+
+Start QR detection:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros zbar_ros.launch.py \
+  image_topic:=/camera/camera/color/image_raw \
+  qrcode_only:=true \
+  try_inverted:=true \
+  equalize_histogram:=true \
+  publish_empty_detections:=false \
+  publish_debug_image:=false
+```
+
+Start pose estimation:
+
+```bash
+cd ~/venom_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch zbar_ros target_pose_estimator.launch.py \
+  target_size_m:=0.16 \
+  use_depth:=true \
+  preferred_symbology:=QR-Code
+```
+
+`target_size_m` must match the real side length of the printed QR square in
+meters. Use the side length between the detected QR corners, not the full paper
+size if there is extra white margin. Depth is used only to correct translation
+distance; PnP remains the primary pose estimate.
+
+For AprilTag pose estimation, keep the same camera command, enable AprilTag in
+the detector, and set `preferred_symbology:=APRILTAG`.
+
+The default D435i color profile is `1280x720x30`.
+If latency matters more than range, keep that profile.
+If the scene is bright and QR codes are close, `640x480x30` can reduce CPU load:
+
+```bash
+ros2 launch zbar_ros d435i_camera.launch.py \
+  rgb_camera.color_profile:=640x480x30
+```
+
+If multiple RealSense devices exist, pin the USB port explicitly:
+
+```bash
+ros2 launch zbar_ros d435i_camera.launch.py usb_port_id:=4-3
+```
 
 ## Runtime Notes
 
 - The detector publishes one `BarcodeDetections` message per input frame, even when no code is present.
 - Debug images preserve the incoming header and are safe to inspect in RViz or `rqt_image_view`.
 - `qrcode_only=true` is the recommended default for the current Venom use case.
-- The module does not subscribe to `/camera_info`, because the current scope is 2D decoding only.
+- `qr_code_detector` does not subscribe to `/camera_info`; pose estimation is handled by `target_pose_estimator`.
+- AprilTag support depends on OpenCV `aruco` from `opencv-contrib`, not on `apriltag_ros`.

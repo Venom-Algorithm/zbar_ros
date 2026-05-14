@@ -31,12 +31,17 @@
 #ifndef ZBAR_ROS__BARCODE_READER_NODE_HPP_
 #define ZBAR_ROS__BARCODE_READER_NODE_HPP_
 
+#include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
+#include "opencv2/aruco.hpp"
+#include "opencv2/objdetect.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "zbar_interfaces/msg/barcode_detection.hpp"
-#include "zbar_interfaces/msg/barcode_detections.hpp"
+#include "zbar_ros/msg/barcode_detection.hpp"
+#include "zbar_ros/msg/barcode_detections.hpp"
 #include <zbar.h>
 
 namespace zbar_ros
@@ -49,11 +54,21 @@ public:
 
 private:
   using ImageMsg = sensor_msgs::msg::Image;
-  using BarcodeDetectionMsg = zbar_interfaces::msg::BarcodeDetection;
-  using BarcodeDetectionsMsg = zbar_interfaces::msg::BarcodeDetections;
+  using BarcodeDetectionMsg = zbar_ros::msg::BarcodeDetection;
+  using BarcodeDetectionsMsg = zbar_ros::msg::BarcodeDetections;
 
   void imageCb(ImageMsg::ConstSharedPtr image);
-  BarcodeDetectionMsg buildDetection(const zbar::Symbol & symbol) const;
+  BarcodeDetectionMsg buildDetection(
+    const zbar::Symbol & symbol, double x_scale, double y_scale) const;
+  BarcodeDetectionMsg buildAprilTagDetection(
+    int tag_id, const std::vector<cv::Point2f> & corners, double x_scale, double y_scale) const;
+  std::optional<std::vector<cv::Point2f>> findQrCodeCorners(
+    const cv::Mat & image, const BarcodeDetectionMsg & rough_detection) const;
+  void replacePolygonWithCorners(
+    BarcodeDetectionMsg & detection, const std::vector<cv::Point2f> & corners) const;
+  void detectAprilTags(
+    const cv::Mat & scan_image, double x_scale, double y_scale,
+    std::vector<BarcodeDetectionMsg> & detections);
   void publishDebugImage(
     const ImageMsg::ConstSharedPtr & image,
     const std::vector<BarcodeDetectionMsg> & detections);
@@ -62,8 +77,20 @@ private:
   rclcpp::Publisher<BarcodeDetectionsMsg>::SharedPtr detections_pub_;
   rclcpp::Publisher<ImageMsg>::SharedPtr debug_image_pub_;
   zbar::ImageScanner scanner_;
+  cv::QRCodeDetector qr_code_detector_;
   bool publish_debug_image_{true};
+  bool publish_empty_detections_{true};
   bool qrcode_only_{true};
+  bool try_inverted_{false};
+  bool equalize_histogram_{false};
+  bool use_reliable_image_qos_{false};
+  int scanner_x_density_{1};
+  int scanner_y_density_{1};
+  double scan_scale_{1.0};
+  bool enable_apriltag_{false};
+  std::string apriltag_family_{"tag36h11"};
+  cv::Ptr<cv::aruco::Dictionary> apriltag_dictionary_;
+  cv::Ptr<cv::aruco::DetectorParameters> apriltag_detector_parameters_;
 };
 
 }  // namespace zbar_ros
